@@ -7,3 +7,10 @@ edition = "2021"
 
 [dependencies]
 bevy = { version = "0.8.0", features = ["dynamic"] }
+bevy_prototype_lyon = "0.6.0"
+bevy_rapier2d = { version = "0.16", features = [ "simd-stable", "debug-render" ] }
+rand = "0.8"
+rand_distr = "0.4"
+bevy_egui = "0.15"
+rmpfit = "0.2.0"
+iyes_loopless = "0.7"
