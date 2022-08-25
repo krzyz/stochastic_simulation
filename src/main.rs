@@ -32,6 +32,7 @@ pub struct Settings {
     pub temp: f32,
     pub dens: f32,
     pub big_part_no: usize,
+    pub fit_sqrt: bool,
 }
 
 impl Default for Settings {
@@ -40,7 +41,8 @@ impl Default for Settings {
         let big_radius = 25.0;
         let temp = 100.0;
         let dens = 2.0;
-        let big_part_no = 20;
+        let big_part_no = 1;
+        let fit_sqrt = false;
 
         Settings {
             small_radius,
@@ -48,6 +50,7 @@ impl Default for Settings {
             temp,
             dens,
             big_part_no,
+            fit_sqrt,
         }
     }
 }
@@ -138,7 +141,35 @@ fn start_simulation(
 
     let air_part_no = (FIXED_HEIGHT * FIXED_HEIGHT * settings.dens / 1000.0) as usize;
 
-    let mut initial_positions: Vec<Vec2> = Vec::new();
+
+    let mut big_part_positions: Vec<Vec2> = Vec::new();
+    'outer: for _ in 0..settings.big_part_no {
+        let max_retries = 20;
+        for i in 0..=max_retries {
+            let margin = 0.173 * settings.big_part_no.pow(2) as f32 - 24.33 * settings.big_part_no as f32 + 700.;
+            let margin = margin.clamp(100., 700.);
+
+            let pos = Vec2::new(
+                get_val_in_range(FIXED_HEIGHT, settings.big_radius + margin, &mut rng),
+                get_val_in_range(FIXED_HEIGHT, settings.big_radius + margin, &mut rng),
+            );
+
+            let valid_placement = big_part_positions 
+                .iter()
+                .all(|&other_pos| other_pos.distance(pos) >= 4.0 * settings.big_radius);
+
+            if valid_placement {
+                big_part_positions.push(pos);
+                break;
+            }
+
+            if i == max_retries {
+                break 'outer;
+            }
+        }
+    }
+
+    let mut small_part_positions: Vec<Vec2> = Vec::new();
     'outer: for _ in 0..air_part_no {
         let max_retries = 20;
         for i in 0..=max_retries {
@@ -147,14 +178,16 @@ fn start_simulation(
                 get_val_in_range(FIXED_HEIGHT, settings.small_radius, &mut rng),
             );
 
-            let valid_placement = initial_positions
+            let valid_placement = small_part_positions
                 .iter()
                 .all(|&other_pos| other_pos.distance(pos) >= settings.small_radius);
 
-            let valid_big = Vec2::ZERO.distance(pos) >= settings.big_radius;
+            let valid_placement = valid_placement && big_part_positions 
+                .iter()
+                .all(|&other_pos| other_pos.distance(pos) >= settings.big_radius);
 
-            if valid_placement && valid_big {
-                initial_positions.push(pos);
+            if valid_placement {
+                small_part_positions.push(pos);
                 break;
             }
 
@@ -166,16 +199,11 @@ fn start_simulation(
 
     let normal = Normal::new(0.0, settings.temp).unwrap();
 
-    let initial_velocities = (0..initial_positions.len())
+    let initial_velocities = (0..small_part_positions.len())
         .map(|_| Vec2::new(normal.sample(&mut rng), normal.sample(&mut rng)))
         .collect::<Vec<_>>();
 
-    let big_part_positions = (0..settings.big_part_no).map(|i| {
-        let angle = 2.0 * PI * PI * (i as f32) / (settings.big_part_no as f32);
-        Vec2::from_angle(angle) * 100.0 * ((i + 1) as f32).ln()
-    });
-
-    for (i, pos) in big_part_positions.enumerate() {
+    for (i, pos) in big_part_positions.iter().enumerate() {
         commands
             .spawn()
             .insert(RigidBody::Dynamic)
@@ -200,12 +228,12 @@ fn start_simulation(
                 Transform::from_xyz(pos.x, pos.y, 0.0),
             ))
             .insert(BigParticle {
-                start_pos: pos,
+                start_pos: *pos,
                 id: i,
             });
     }
 
-    for (pos, &vel) in initial_positions.iter().zip(initial_velocities.iter()) {
+    for (pos, &vel) in small_part_positions.iter().zip(initial_velocities.iter()) {
         commands
             .spawn()
             .insert(RigidBody::Dynamic)
@@ -295,19 +323,10 @@ fn measure(
     }
 }
 
-fn distance_plot_ui(mut egui_context: ResMut<EguiContext>, measures: Res<Measures>) {
+fn distance_plot_ui(mut egui_context: ResMut<EguiContext>, settings: Res<Settings>, measures: Res<Measures>) {
     let avg_line = make_line(&measures.avg_distance[..]).color(Rgba::from_rgb(1.0, 1.0, 1.0));
-    let fitted_line = fit_sqrt_and_make_line(
-        &measures
-            .avg_distance
-            .iter()
-            .map(|&v| v as f64)
-            .collect::<Vec<_>>()[..],
-    )
-    .color(Rgba::from_rgba_premultiplied(0.0, 1.0, 0.0, 0.01));
-
     let other_lines = measures.distances.iter().map(|distance| {
-        make_line(&distance[..]).color(Rgba::from_rgba_unmultiplied(1.0, 0.0, 0.0, 0.1))
+        make_line(&distance[..]).color(Rgba::from_rgba_unmultiplied(1.0, 0.0, 0.0, 0.4))
     });
 
     egui::Window::new("Distance").show(egui_context.ctx_mut(), |ui| {
@@ -315,7 +334,20 @@ fn distance_plot_ui(mut egui_context: ResMut<EguiContext>, measures: Res<Measure
             for line in other_lines {
                 plot_ui.line(line);
             }
-            plot_ui.line(fitted_line);
+
+            if settings.fit_sqrt {
+                let fitted_line = fit_sqrt_and_make_line(
+                    &measures
+                        .avg_distance
+                        .iter()
+                        .map(|&v| v as f64)
+                        .collect::<Vec<_>>()[..],
+                )
+                .color(Rgba::from_rgba_unmultiplied(0.0, 1.0, 0.0, 1.0));
+
+
+                plot_ui.line(fitted_line);
+            }
             plot_ui.line(avg_line);
         });
     });
@@ -336,6 +368,7 @@ fn controls_ui(
         ui.add(egui::Slider::new(&mut settings.temp, 10.0..=200.0).text("T Small"));
         ui.add(egui::Slider::new(&mut settings.dens, 0.1..=4.0).text("ρ Small"));
         ui.add(egui::Slider::new(&mut settings.big_part_no, 0..=120).text("# Big"));
+        ui.add(egui::Checkbox::new(&mut settings.fit_sqrt, "Fit square root"));
         if ui.button("(Re)start").clicked() {
             commands.insert_resource(NextState(SimulationState::Init));
         }
